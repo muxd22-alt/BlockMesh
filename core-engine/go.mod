@@ -1,6 +1,6 @@
 module github.com/muxd22-alt/BlockMesh/core-engine
 
-go 1.21
+go 1.25.0
 
 require (
 	github.com/libp2p/go-libp2p v0.32.1
