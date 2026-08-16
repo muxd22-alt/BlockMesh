@@ -92,6 +92,7 @@ class MainActivity : Activity() {
                 }
             }
         }
+        applyTVFocus(toggleButton)
         topCard.addView(toggleButton)
         layout.addView(topCard)
 
@@ -120,6 +121,7 @@ class MainActivity : Activity() {
             setTextColor(textColor)
         }
         modeBtn.setOnClickListener { showAppConfigDialog() }
+        applyTVFocus(modeBtn)
         
         modeCard.addView(modeTitle)
         modeCard.addView(modeText)
@@ -171,6 +173,27 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun applyTVFocus(view: android.view.View) {
+        view.isFocusable = true
+        view.setOnFocusChangeListener { v, hasFocus ->
+            if (hasFocus) {
+                v.animate().scaleX(1.03f).scaleY(1.03f).setDuration(150).start()
+                v.setBackgroundColor(Color.parseColor("#444444")) // Highlight color for TV remote
+            } else {
+                v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start()
+                if (v is Button) {
+                    when (v.text.toString().take(4)) {
+                        "Start" -> v.setBackgroundColor(Color.parseColor("#1976D2"))
+                        "Stop" -> v.setBackgroundColor(Color.parseColor("#D32F2F"))
+                        else -> v.setBackgroundColor(Color.parseColor("#333333")) // Default
+                    }
+                } else if (v is LinearLayout) {
+                    v.background = getCardBg()
+                }
+            }
+        }
+    }
+
     private fun renderSources() {
         sourcesContainer.removeAllViews()
         val activeUrls = Engine.getBlocklistURLs().split("\n").filter { it.isNotEmpty() }.toSet()
@@ -190,15 +213,21 @@ class MainActivity : Activity() {
             val checkbox = CheckBox(this).apply {
                 isChecked = isEnabled
                 setPadding(0, 0, 32, 0)
+                isFocusable = false // Let the card handle focus on TV
+                isClickable = false
             }
-            checkbox.setOnCheckedChangeListener { _, checked ->
-                if (checked) Engine.addBlocklistURL(source.url)
+            
+            // TV remote interaction
+            card.setOnClickListener {
+                checkbox.isChecked = !checkbox.isChecked
+                if (checkbox.isChecked) Engine.addBlocklistURL(source.url)
                 else Engine.removeBlocklistURL(source.url)
                 
                 if (Engine.isRunning()) Engine.refreshBlocklists()
                 Toast.makeText(this@MainActivity, "Refreshing blocklists...", Toast.LENGTH_SHORT).show()
                 updateUI()
             }
+            applyTVFocus(card)
             
             val textLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
