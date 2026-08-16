@@ -94,17 +94,20 @@ func fetchAndUpdateAllLists() {
 	fmt.Printf("Updating blocklists from %d sources...\n", len(urls))
 	newTrie := newRadixTrie()
 	var totalCount int
+	var allDomains []string // to cache
 
 	for _, url := range urls {
-		count := fetchFromURL(url, newTrie)
+		count := fetchFromURL(url, newTrie, &allDomains)
 		totalCount += count
 	}
 
 	activeTrie.Store(newTrie)
 	fmt.Printf("Blocklist updated: %d domains from %d sources.\n", totalCount, len(urls))
+
+	go saveCache(allDomains)
 }
 
-func fetchFromURL(url string, trie *radixTrie) int {
+func fetchFromURL(url string, trie *radixTrie, allDomains *[]string) int {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -125,23 +128,72 @@ func fetchFromURL(url string, trie *radixTrie) int {
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
 			continue
 		}
-		// hosts-file format: "0.0.0.0 domain" or "127.0.0.1 domain"
 		if strings.HasPrefix(line, "0.0.0.0 ") || strings.HasPrefix(line, "127.0.0.1 ") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
 				line = parts[1]
 			}
 		}
-		// adblock format: "||domain^"
 		if strings.HasPrefix(line, "||") {
 			line = strings.TrimPrefix(line, "||")
 			line = strings.TrimSuffix(line, "^")
 		}
 		if line != "" && strings.Contains(line, ".") {
 			trie.insert(line)
+			*allDomains = append(*allDomains, line)
 			count++
 		}
 	}
 	fmt.Printf("Loaded %d domains from %s\n", count, url)
 	return count
+}
+
+func cacheFilePath() string {
+	if cacheDir == "" {
+		return "trie.cache"
+	}
+	return cacheDir + "/trie.cache"
+}
+
+func loadCache() {
+	importDomainsFromFile(cacheFilePath())
+}
+
+func saveCache(domains []string) {
+	file, err := os.Create(cacheFilePath())
+	if err != nil {
+		fmt.Printf("Failed creating cache: %v\n", err)
+		return
+	}
+	defer file.Close()
+	
+	writer := bufio.NewWriter(file)
+	for _, domain := range domains {
+		writer.WriteString(domain + "\n")
+	}
+	writer.Flush()
+	fmt.Println("Wrote offline domain cache to disk.")
+}
+
+func importDomainsFromFile(path string) {
+	file, err := os.Open(path)
+	if (err != nil) {
+		return
+	}
+	defer file.Close()
+	
+	newTrie := newRadixTrie()
+	scanner := bufio.NewScanner(file)
+	count := 0
+	for scanner.Scan() {
+		domain := strings.TrimSpace(scanner.Text())
+		if domain != "" {
+			newTrie.insert(domain)
+			count++
+		}
+	}
+	if count > 0 {
+		activeTrie.Store(newTrie)
+		fmt.Printf("Loaded %d domains instantly from fast cold cache binary!\n", count)
+	}
 }

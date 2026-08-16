@@ -8,17 +8,20 @@ import (
 var (
 	running  bool
 	runMutex sync.Mutex
+	cacheDir string
 )
 
 // StartEngine initializes the DNS sinkhole and blocklist updater.
-func StartEngine() {
+func StartEngine(storageDir string) {
 	runMutex.Lock()
 	defer runMutex.Unlock()
 	if running {
 		return
 	}
 	running = true
+	cacheDir = storageDir
 	fmt.Println("BlockMesh DNS Sinkhole Engine starting...")
+	loadCache() // Load instant offline cache!
 	startBlocklistUpdater()
 	fmt.Println("BlockMesh DNS Engine ready.")
 }

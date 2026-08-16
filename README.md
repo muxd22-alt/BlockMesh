@@ -98,10 +98,10 @@ Both artifacts are uploaded and downloadable from the Actions tab.
 - [ ] P2P mesh routing with `go-libp2p` + Kademlia DHT
 - [ ] NAT traversal (STUN/TURN + UDP hole punching)
 - [ ] QR code device pairing (key exchange)
-- [ ] Split tunneling (home Wi-Fi = local blocking only)
+- [x] Split tunneling (app-based filtering supported)
 - [ ] Android TV exit node mode
-- [ ] Binary trie caching for offline cold starts
-- [ ] Multiple blocklist sources
+- [x] Binary trie caching for offline cold starts
+- [x] Multiple blocklist sources
 
 ## License
 

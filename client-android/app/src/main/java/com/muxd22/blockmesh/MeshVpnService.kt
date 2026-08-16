@@ -53,7 +53,7 @@ class MeshVpnService : VpnService() {
             if (vpnInterface != null) {
                 showNotification()
                 Thread {
-                    Engine.startEngine()
+                    Engine.startEngine(filesDir.absolutePath)
                 }.start()
             } else {
                 stopSelf()
