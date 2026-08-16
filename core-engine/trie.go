@@ -3,53 +3,55 @@ package engine
 import "strings"
 
 type radixNode struct {
-	Children map[string]*radixNode
-	IsEnd    bool
+	children map[string]*radixNode
+	isEnd    bool
 }
 
 type radixTrie struct {
-	Root *radixNode
+	root  *radixNode
+	count int
 }
 
 func newRadixTrie() *radixTrie {
 	return &radixTrie{
-		Root: &radixNode{
-			Children: make(map[string]*radixNode),
-			IsEnd:    false,
+		root: &radixNode{
+			children: make(map[string]*radixNode),
 		},
 	}
 }
 
+// insert adds a domain to the blocklist (stored reversed: com -> google -> ads)
 func (t *radixTrie) insert(domain string) {
 	parts := strings.Split(domain, ".")
 	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
 		parts[i], parts[j] = parts[j], parts[i]
 	}
 
-	curr := t.Root
+	curr := t.root
 	for _, part := range parts {
-		if _, exists := curr.Children[part]; !exists {
-			curr.Children[part] = &radixNode{
-				Children: make(map[string]*radixNode),
-				IsEnd:    false,
+		if _, exists := curr.children[part]; !exists {
+			curr.children[part] = &radixNode{
+				children: make(map[string]*radixNode),
 			}
 		}
-		curr = curr.Children[part]
+		curr = curr.children[part]
 	}
-	curr.IsEnd = true
+	curr.isEnd = true
+	t.count++
 }
 
+// contains checks if a domain (or its parent) is blocked
 func (t *radixTrie) contains(domain string) bool {
 	parts := strings.Split(domain, ".")
 	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
 		parts[i], parts[j] = parts[j], parts[i]
 	}
 
-	curr := t.Root
+	curr := t.root
 	for _, part := range parts {
-		if next, exists := curr.Children[part]; exists {
+		if next, exists := curr.children[part]; exists {
 			curr = next
-			if curr.IsEnd {
+			if curr.isEnd {
 				return true
 			}
 		} else {
