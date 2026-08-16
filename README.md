@@ -35,13 +35,13 @@ graph TD
         TV[Android TV / Exit Node]
     end
 
-    Phone -- 1. Query Peer ID --> DHT
-    DHT -. Returns IP .-> Phone
-    Phone -- 2. What's my open IP/Port? --> STUN
-    TV -- 2. What's my open IP/Port? --> STUN
-    Phone <== 3. UDP Hole Punching (Direct WireGuard Tunnel) ==> TV
-    Phone -.- 4. Fallback (If strictly firewalled) -.- Relay
-    Relay -.- 4. Fallback (Encrypted routing) -.- TV
+    Phone -- "1. Query Peer ID" --> DHT
+    DHT -. "Returns IP" .-> Phone
+    Phone -- "2. What's my open IP/Port?" --> STUN
+    TV -- "2. What's my open IP/Port?" --> STUN
+    Phone == "3. UDP Hole Punching (WireGuard)" ==> TV
+    Phone -. "4. Fallback (If strictly firewalled)" .-> Relay
+    Relay -. "4. Fallback (Encrypted routing)" .-> TV
 ```
 
 ## 🧠 The Core Engine (Built in Go)
