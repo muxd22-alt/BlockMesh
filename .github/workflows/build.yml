@@ -33,7 +33,7 @@ jobs:
           cd core-engine
           go get -tool golang.org/x/mobile/cmd/gobind
           go mod tidy
-          gomobile bind -target=android -o ../client-android/engine.aar github.com/muxd22-alt/BlockMesh/core-engine
+          gomobile bind -target=android -androidapi 24 -o ../client-android/engine.aar github.com/muxd22-alt/BlockMesh/core-engine
           
       - name: Build Android APK
         run: |
