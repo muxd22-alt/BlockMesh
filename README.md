@@ -1,97 +1,108 @@
-# BlockMesh: Decentralized Pi-Hole + Mesh VPN
+# BlockMesh
 
-BlockMesh is a serverless, single-application mesh VPN with a built-in DNS sinkhole. No cloud subscriptions, no Raspberry Pi required, and no complicated router configurations. By targeting mobile and smart TVs first, BlockMesh turns devices you already own into the backbone of your private network.
+Serverless mesh VPN with a built-in DNS sinkhole. No cloud, no subscriptions, no Pi-hole box.
 
-## 🚀 The Vision: An "Anti-Cloud" Architecture
+The Go core handles DNS filtering and ad-blocking. Native Android/iOS apps wrap it via gomobile. Devices talk peer-to-peer — your phone becomes the firewall.
 
-**There is no central server, no telemetry, and no premium subscription.** All routing is 100% peer-to-peer. 
+[![Build](https://github.com/muxd22-alt/BlockMesh/actions/workflows/build.yml/badge.svg)](https://github.com/muxd22-alt/BlockMesh/actions/workflows/build.yml)
 
-BlockMesh combines the official `wireguard-go` library with `go-libp2p` to create a flawless, central-server-free mesh network. Your devices communicate directly with each other, bypassing strict firewalls automatically.
+## Install
 
----
+Grab the latest APK from [Actions → build-android → Artifacts](https://github.com/muxd22-alt/BlockMesh/actions/workflows/build.yml).
 
-## 🏗️ Architecture
+Or build it yourself:
 
-BlockMesh decouples the "Engine" from the "UI", allowing for a highly optimized, cross-platform core.
-
-### The Monorepo Structure
-
-* `/core-engine` - The Go code containing the VPN tuner, P2P mesh router, and DNS sinkhole.
-* `/client-android` - Kotlin UI for Android and Android TV using Jetpack Compose.
-* `/client-ios` - Swift UI for iOS and tvOS.
-
-### How it Works (Visualized)
-
-```mermaid
-graph TD
-    subgraph Public Internet
-        STUN[STUN/TURN Servers]
-        Relay[libp2p Circuit Relay Node]
-        DHT[Kademlia DHT]
-    end
-
-    subgraph User Devices
-        Phone[Android/iOS Phone]
-        TV[Android TV / Exit Node]
-    end
-
-    Phone -- "1. Query Peer ID" --> DHT
-    DHT -. "Returns IP" .-> Phone
-    Phone -- "2. What's my open IP/Port?" --> STUN
-    TV -- "2. What's my open IP/Port?" --> STUN
-    Phone == "3. UDP Hole Punching (WireGuard)" ==> TV
-    Phone -. "4. Fallback (If strictly firewalled)" .-> Relay
-    Relay -. "4. Fallback (Encrypted routing)" .-> TV
+```bash
+# one-liner: clone, build core, build apk
+git clone https://github.com/muxd22-alt/BlockMesh.git && cd BlockMesh && \
+  cd core-engine && go mod tidy && gomobile bind -target=android -androidapi 24 -o ../client-android/engine.aar . && \
+  cd ../client-android && gradle assembleDebug
 ```
 
-## 🧠 The Core Engine (Built in Go)
+Output: `client-android/app/build/outputs/apk/debug/app-debug.apk`
 
-The Go engine acts as a "black box" library. The Android/iOS apps simply hand it a raw network connection (`tun` interface), and Go handles all the cryptography, peer discovery, and ad-blocking.
+### Prerequisites
 
-### 1. libp2p & NAT Traversal (The Magic Trick)
+- Go 1.25+
+- gomobile (`go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init`)
+- JDK 17
+- Gradle 8.9+
+- Android SDK (API 24+)
 
-When you are at a coffee shop and your phone tries to connect to your Android TV at home, your router's NAT inherently blocks the incoming connection. Standard VPNs require manual "Port Forwarding". BlockMesh automates this using **UDP Hole Punching**:
+## What's in the repo
 
-1. **The Kademlia DHT (The Phonebook):** The phone queries the libp2p DHT asking for the Android TV's cryptographic peer ID. The network responds with the TV's last known public IP.
-2. **AutoNAT & STUN:** Both devices ask public STUN servers to identify their outside IP/port structure.
-3. **UDP Hole Punching:** The TV sends a dummy UDP packet *out* to the phone's IP. The router opens a temporary outbound hole. The phone simultaneously sends a WireGuard handshake. The router lets the packet slip right through!
-4. **Circuit Relay (Fallback):** If behind ultra-strict symmetric corporate firewalls, libp2p utilizes a "Relay" node to temporarily ferry fully encrypted packets until a direct connection routes.
+```
+core-engine/          Go library — DNS sinkhole + radix trie blocker
+  engine.go           Public API: StartEngine, StopEngine, CheckDomain, ProcessDNSQuery, GetBlockedCount
+  dns.go              Packet inspection, DNS question parser
+  trie.go             Radix trie for domain matching (reversed label storage)
+  updater.go          Background blocklist fetcher with ETag delta sync
+client-android/       Kotlin Android app (VpnService wrapper)
+client-ios/           Swift/iOS shell (XCFramework target)
+.github/workflows/    CI — builds AAR + APK (Android) and XCFramework (iOS)
+```
 
-### 2. The Local DNS Sinkhole (Ad-Blocker)
+## How the DNS sinkhole works
 
-Before a packet goes into the WireGuard tunnel, the Go engine checks if it's a DNS request (Port 53).
+1. The VPN service intercepts all traffic on the device
+2. DNS queries (UDP port 53) are extracted from raw IP packets
+3. Domain names are checked against a radix trie loaded with blocklist entries
+4. Blocked domains get `0.0.0.0` — the request dies instantly
+5. Everything else passes through normally
 
-- **If blocked:** It instantly returns a fake response (e.g., `0.0.0.0`), dropping the ad.
-- **If allowed:** It forwards the request through WireGuard.
+The trie stores domains reversed (`ads.google.com` → `com → google → ads`) so parent domain blocks automatically catch all subdomains.
 
-#### Automating Blocklist Updates
+### Blocklist updates
 
-To keep blocklists fresh without battery drain:
+- Fetches from [pgl.yoyo.org](https://pgl.yoyo.org/adservers/) every 12 hours
+- Uses HTTP `If-None-Match` / ETag headers — only downloads when the list actually changes
+- Builds a new trie in a separate allocation, then swaps it in atomically via `sync/atomic.Pointer` — zero downtime, no locks
 
-* **Background Goroutine:** Checks for updates silently every 12 hours.
-* **Delta Syncing via ETags:** Uses HTTP `If-None-Match` with ETags to only download the list if it has actually changed, saving data.
-* **Atomic Pointer Swapping:** To prevent network stalling when building the Radix Trie of 300,000 domains, the engine builds the new Trie in a separate memory block, swapping pointers atomically in a single nanosecond.
-* **Binary Caching:** The engine caches the Trie in binary (`gob`) format. Offline reboots load the cache instantly.
+## Architecture
 
----
+```
+┌─────────────────────────────────────┐
+│  Android / iOS App                  │
+│  (Kotlin VpnService / Swift NEPT)   │
+│                                     │
+│  ┌───────────────────────────────┐  │
+│  │  Go Core Engine (gomobile)    │  │
+│  │                               │  │
+│  │  DNS Interceptor              │  │
+│  │    ↓                          │  │
+│  │  Radix Trie Matcher           │  │
+│  │    ↓                          │  │
+│  │  Block (0.0.0.0) or Pass      │  │
+│  │                               │  │
+│  │  Background Updater (12h)     │  │
+│  │    → ETag check               │  │
+│  │    → Atomic trie swap         │  │
+│  └───────────────────────────────┘  │
+└─────────────────────────────────────┘
+```
 
-## 📱 Platform Integrations
+## CI/CD
 
-### Android & Android TV (Kotlin + Jetpack Compose)
+GitHub Actions builds on every push to `main`:
 
-Android's `VpnService` API is leveraged. Using `detachFd()`, the raw file descriptor is passed seamlessly out of the JVM into `wireguard-go` via C bindings. This removes unnecessary data marshaling latency and battery drain. The same APK builds a stable Exit Node on an Android TV (always plugged in, always connected).
+| Job | Runner | Output |
+|-----|--------|--------|
+| `build-android` | `ubuntu-latest` | `engine.aar` + `app-debug.apk` |
+| `build-ios-core` | `macos-latest` | `Engine.xcframework` |
 
-### iOS & tvOS (SwiftUI)
+Both artifacts are uploaded and downloadable from the Actions tab.
 
-Apple requires using `NEPacketTunnelProvider`. Since we cannot hand off a raw File Descriptor to Go, Swift leverages `NEPacketTunnelFlow` to read `NSData` packets. 
+## Roadmap
 
-1. **The Interceptor:** Go sniffs the layer 3 IPv4 header.
-2. **DNS Unpacking:** If destination port is 53, extract domain.
-3. **Radix Trie Matcher:** Match against blocklist.
-4. **The Forge:** Reconstruct `0.0.0.0` DNS payload, swap IPs/Ports, and send directly back to OS, bypassing WireGuard completely for blocked domains.
+- [ ] WireGuard tunnel integration via `wireguard-go`
+- [ ] P2P mesh routing with `go-libp2p` + Kademlia DHT
+- [ ] NAT traversal (STUN/TURN + UDP hole punching)
+- [ ] QR code device pairing (key exchange)
+- [ ] Split tunneling (home Wi-Fi = local blocking only)
+- [ ] Android TV exit node mode
+- [ ] Binary trie caching for offline cold starts
+- [ ] Multiple blocklist sources
 
-## 🌟 "Super Smart" UX Features
+## License
 
-* **Context-Aware Split Tunneling:** When on home Wi-Fi, only local ad-blocking runs. Once you leave, the WireGuard tunnel directly spins up.
-* **QR Code Mesh Pairing:** To add an iPad to your mesh, simply tap "Add Device" on the Android phone and scan a QR code. WireGuard keys + libp2p IDs exchange securely in a second. No accounts, no emails, no passwords.
-* **Zero Battery Drain:** Combines stateless WireGuard performance with efficient local DNS blocking.
+[MIT](LICENSE.md)
