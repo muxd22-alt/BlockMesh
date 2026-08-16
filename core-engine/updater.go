@@ -8,19 +8,14 @@ import (
 	"time"
 )
 
-// The Peter Lowe Ad/Tracking list (active by default in uBlock Origin)
-// Returns a highly accurate clean list of raw domains.
 const uBlockListURL = "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=nohtml&showintro=0&mimetype=plaintext"
 
 var lastETag string
 
-// StartBlocklistUpdater launches a background goroutine 
-func StartBlocklistUpdater() {
+func startBlocklistUpdater() {
 	go func() {
-		// Run immediately on boot to hydrate the Trie
 		fetchAndUpdateList()
 
-		// Then check every 12 hours as architected
 		ticker := time.NewTicker(12 * time.Hour)
 		defer ticker.Stop()
 
@@ -40,7 +35,6 @@ func fetchAndUpdateList() {
 		return
 	}
 
-	// Delta Syncing via ETags
 	if lastETag != "" {
 		req.Header.Set("If-None-Match", lastETag)
 	}
@@ -61,9 +55,8 @@ func fetchAndUpdateList() {
 		lastETag = etag
 	}
 
-	newTrie := NewRadixTrie()
+	newTrie := newRadixTrie()
 	
-	// Read the plain text domains line by line
 	scanner := bufio.NewScanner(resp.Body)
 	var count int
 	for scanner.Scan() {
@@ -71,12 +64,10 @@ func fetchAndUpdateList() {
 		if domain == "" || strings.HasPrefix(domain, "#") {
 			continue // Skip empty or comment lines
 		}
-		newTrie.Insert(domain)
+		newTrie.insert(domain)
 		count++
 	}
 
-	// 1. Atomic Pointer Swap (Zero Downtime)
-	// We safely swap the actively routing DNS Trie without dropping any packets
 	activeTrie.Store(newTrie)
 
 	fmt.Printf("Blocklist updated successfully. %d uBlock domains atomically loaded into Radix Trie.\n", count)
