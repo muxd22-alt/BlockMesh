@@ -31,9 +31,22 @@ class MeshVpnService : VpnService() {
             val builder = Builder()
             builder.setSession("BlockMesh DNS")
             builder.addAddress("10.100.0.2", 32)
-            // REMOVED route to 0.0.0.0/0
-            // This ensures standard internet access continues working via cellular/WiFi,
-            // while keeping the VPN interface active for Engine hookups.
+            // REMOVED route to 0.0.0.0/0 to keep normal internet working
+
+            // Split Tunneling Logic
+            val prefs = getSharedPreferences("BlockMeshPrefs", Context.MODE_PRIVATE)
+            val mode = prefs.getString("vpn_mode", "system")
+            val apps = prefs.getStringSet("target_apps", setOf()) ?: setOf()
+
+            if (mode == "exclude") {
+                for (pkg in apps) {
+                    try { builder.addDisallowedApplication(pkg) } catch (e: Exception) {}
+                }
+            } else if (mode == "include") {
+                for (pkg in apps) {
+                    try { builder.addAllowedApplication(pkg) } catch (e: Exception) {}
+                }
+            }
 
             vpnInterface = builder.establish()
 
