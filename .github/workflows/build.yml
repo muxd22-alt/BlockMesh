@@ -35,6 +35,9 @@ jobs:
           go mod tidy
           gomobile bind -target=android -androidapi 24 -o ../client-android/engine.aar github.com/muxd22-alt/BlockMesh/core-engine
           
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Build Android APK
         run: |
           cd client-android
