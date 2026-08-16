@@ -26,8 +26,8 @@ func StartMesh(fd int, nodePrivateKey string, peerConfig string) {
 		return
 	}
 
-	// 2. Initialize the Ad-blocking DNS Interceptor on the TUN
-	// StartLocalDNSSinkhole(tunDevice) would wrap the TUN device to sniff packets
+	// 2. Initialize the Ad-blocking DNS Interceptor and launch Background Updater
+	StartBlocklistUpdater()
 
 	// 3. Start libp2p host to handle NAT traversal
 	host, err := libp2p.New(

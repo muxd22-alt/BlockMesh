@@ -2,19 +2,17 @@ package engine
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/ipv4"
 )
 
-// Simulated global Radix Trie
-var blocklistTrie *RadixTrie
+var activeTrie atomic.Pointer[RadixTrie]
 
 func init() {
-	blocklistTrie = NewRadixTrie()
-	// Dummy ad domains for testing
-	blocklistTrie.Insert("ads.google.com")
-	blocklistTrie.Insert("telemetry.app.com")
+	emptyTrie := NewRadixTrie()
+	activeTrie.Store(emptyTrie)
 }
 
 // ProcessPacket acts as the bouncer. 
@@ -61,8 +59,9 @@ func handleDNSQuery(rawPacket []byte) {
 		domain = domain[:len(domain)-1]
 	}
 
-	// 5. Query our ultra-fast Radix Trie
-	if blocklistTrie.Contains(domain) {
+	// 5. Query our ultra-fast Radix Trie atomically
+	trie := activeTrie.Load()
+	if trie != nil && trie.Contains(domain) {
 		fmt.Printf("BLOCKED AD REQUEST: %s\n", domain)
 		// 6. Forge the Sinkhole Response (0.0.0.0)
 		sinkholePacket := forgeDNSZeroResponse(rawPacket, msg)

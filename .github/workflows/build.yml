@@ -31,6 +31,7 @@ jobs:
       - name: Build Core Engine (AAR)
         run: |
           cd core-engine
+          go get golang.org/x/mobile/bind
           go mod tidy
           gomobile bind -target=android -o ../client-android/engine.aar github.com/muxd22-alt/BlockMesh/core-engine
           
@@ -63,6 +64,7 @@ jobs:
       - name: Build iOS Core Framework (XCFramework)
         run: |
           cd core-engine
+          go get golang.org/x/mobile/bind
           go mod tidy
           gomobile bind -target=ios -o ../client-ios/Engine.xcframework github.com/muxd22-alt/BlockMesh/core-engine
           
