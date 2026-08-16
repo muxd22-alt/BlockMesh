@@ -5,70 +5,143 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
-const uBlockListURL = "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=nohtml&showintro=0&mimetype=plaintext"
+var (
+	blocklistURLs = []string{
+		"https://pgl.yoyo.org/adservers/serverlist.php?hostformat=nohtml&showintro=0&mimetype=plaintext",
+	}
+	urlMutex sync.Mutex
+	stopCh   chan struct{}
+)
 
-var lastETag string
+func addURL(url string) {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return
+	}
+	urlMutex.Lock()
+	defer urlMutex.Unlock()
+	for _, u := range blocklistURLs {
+		if u == url {
+			return
+		}
+	}
+	blocklistURLs = append(blocklistURLs, url)
+}
+
+func removeURL(url string) {
+	urlMutex.Lock()
+	defer urlMutex.Unlock()
+	for i, u := range blocklistURLs {
+		if u == url {
+			blocklistURLs = append(blocklistURLs[:i], blocklistURLs[i+1:]...)
+			return
+		}
+	}
+}
+
+func getURLs() string {
+	urlMutex.Lock()
+	defer urlMutex.Unlock()
+	return strings.Join(blocklistURLs, "\n")
+}
+
+func setURLs(urls string) {
+	urlMutex.Lock()
+	defer urlMutex.Unlock()
+	blocklistURLs = nil
+	for _, u := range strings.Split(urls, "\n") {
+		u = strings.TrimSpace(u)
+		if u != "" {
+			blocklistURLs = append(blocklistURLs, u)
+		}
+	}
+}
 
 func startBlocklistUpdater() {
+	stopCh = make(chan struct{})
 	go func() {
-		fetchAndUpdateList()
-
+		fetchAndUpdateAllLists()
 		ticker := time.NewTicker(12 * time.Hour)
 		defer ticker.Stop()
-
-		for range ticker.C {
-			fetchAndUpdateList()
+		for {
+			select {
+			case <-ticker.C:
+				fetchAndUpdateAllLists()
+			case <-stopCh:
+				return
+			}
 		}
 	}()
 }
 
-func fetchAndUpdateList() {
-	fmt.Println("Checking for uBlock blocklist updates...")
-	client := &http.Client{Timeout: 15 * time.Second}
-	
-	req, err := http.NewRequest("GET", uBlockListURL, nil)
-	if err != nil {
-		fmt.Printf("Update failed to initialize: %v\n", err)
-		return
+func stopBlocklistUpdater() {
+	if stopCh != nil {
+		close(stopCh)
+		stopCh = nil
 	}
+}
 
-	if lastETag != "" {
-		req.Header.Set("If-None-Match", lastETag)
-	}
+func fetchAndUpdateAllLists() {
+	urlMutex.Lock()
+	urls := make([]string, len(blocklistURLs))
+	copy(urls, blocklistURLs)
+	urlMutex.Unlock()
 
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("Update network request failed: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotModified {
-		fmt.Println("Blocklist is already up to date (304 Not Modified).")
-		return
-	}
-
-	if etag := resp.Header.Get("ETag"); etag != "" {
-		lastETag = etag
-	}
-
+	fmt.Printf("Updating blocklists from %d sources...\n", len(urls))
 	newTrie := newRadixTrie()
-	
-	scanner := bufio.NewScanner(resp.Body)
-	var count int
-	for scanner.Scan() {
-		domain := strings.TrimSpace(scanner.Text())
-		if domain == "" || strings.HasPrefix(domain, "#") {
-			continue // Skip empty or comment lines
-		}
-		newTrie.insert(domain)
-		count++
+	var totalCount int
+
+	for _, url := range urls {
+		count := fetchFromURL(url, newTrie)
+		totalCount += count
 	}
 
 	activeTrie.Store(newTrie)
+	fmt.Printf("Blocklist updated: %d domains from %d sources.\n", totalCount, len(urls))
+}
 
-	fmt.Printf("Blocklist updated successfully. %d uBlock domains atomically loaded into Radix Trie.\n", count)
+func fetchFromURL(url string, trie *radixTrie) int {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Printf("Failed to fetch %s: %v\n", url, err)
+		return 0
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("HTTP %d from %s\n", resp.StatusCode, url)
+		return 0
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	var count int
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		// hosts-file format: "0.0.0.0 domain" or "127.0.0.1 domain"
+		if strings.HasPrefix(line, "0.0.0.0 ") || strings.HasPrefix(line, "127.0.0.1 ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				line = parts[1]
+			}
+		}
+		// adblock format: "||domain^"
+		if strings.HasPrefix(line, "||") {
+			line = strings.TrimPrefix(line, "||")
+			line = strings.TrimSuffix(line, "^")
+		}
+		if line != "" && strings.Contains(line, ".") {
+			trie.insert(line)
+			count++
+		}
+	}
+	fmt.Printf("Loaded %d domains from %s\n", count, url)
+	return count
 }
