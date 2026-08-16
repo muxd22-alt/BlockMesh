@@ -98,7 +98,7 @@ class MeshVpnService : VpnService() {
             .setOngoing(true)
             .build()
 
-        startForeground(NOTIFICATION_ID, notification)
+        manager.notify(NOTIFICATION_ID, notification)
     }
 
     override fun onDestroy() {
