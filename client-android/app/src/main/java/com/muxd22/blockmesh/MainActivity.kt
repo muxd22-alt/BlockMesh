@@ -56,6 +56,12 @@ class MainActivity : Activity() {
             setPadding(16, 0, 0, 16)
         }
         layout.addView(header)
+
+        val prefs = getSharedPreferences("BlockMeshPrefs", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("lists_initialized", false)) {
+            defaultSources.forEach { Engine.addBlocklistURL(it.url) }
+            prefs.edit().putBoolean("lists_initialized", true).apply()
+        }
         
         checkBatteryOptimizations()
 
