@@ -1,0 +1,73 @@
+name: Build BlockMesh Pipelines
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          
+      - name: Initialize Gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+          
+      - name: Build Core Engine (AAR)
+        run: |
+          cd core-engine
+          go mod tidy
+          gomobile bind -target=android -o ../client-android/engine.aar github.com/muxd22-alt/BlockMesh/core-engine
+          
+      - name: Build Android APK
+        run: |
+          cd client-android
+          gradle assembleDebug
+          
+      - name: Upload Android APK Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: blockmesh-android-apk
+          path: client-android/app/build/outputs/apk/debug/app-debug.apk
+
+  build-ios-core:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          
+      - name: Initialize Gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+          
+      - name: Build iOS Core Framework (XCFramework)
+        run: |
+          cd core-engine
+          go mod tidy
+          gomobile bind -target=ios -o ../client-ios/Engine.xcframework github.com/muxd22-alt/BlockMesh/core-engine
+          
+      - name: Upload iOS XCFramework Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: blockmesh-ios-xcframework
+          path: client-ios/Engine.xcframework
