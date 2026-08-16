@@ -6,8 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.Gravity
 import android.widget.*
 import engine.Engine
@@ -53,6 +56,8 @@ class MainActivity : Activity() {
             setPadding(16, 0, 0, 16)
         }
         layout.addView(header)
+        
+        checkBatteryOptimizations()
 
         // --- STATUS & TOGGLE ---
         val topCard = LinearLayout(this).apply {
@@ -128,6 +133,39 @@ class MainActivity : Activity() {
         modeCard.addView(modeBtn)
         layout.addView(modeCard)
 
+        // --- TIPS & TRICKS FOR BATTERY (PHONE/TV) ---
+        val tipsCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 32, 32, 32)
+            background = getCardBg()
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, 32)
+            }
+        }
+        val tipsTitle = TextView(this).apply {
+            text = "Battery Optimization Tips & Tricks \uD83D\uDCA1"
+            textSize = 18f
+            setTextColor(textColor)
+        }
+        val tipsText = TextView(this).apply {
+            text = "Keep BlockMesh running 24/7 on Phones & TVs without random disconnects."
+            textSize = 14f
+            setTextColor(textMuted)
+            setPadding(0, 8, 0, 16)
+        }
+        val tipsBtn = Button(this).apply {
+            text = "View Tips"
+            setBackgroundColor(Color.parseColor("#333333"))
+            setTextColor(textColor)
+        }
+        tipsBtn.setOnClickListener { showTipsDialog() }
+        applyTVFocus(tipsBtn)
+        
+        tipsCard.addView(tipsTitle)
+        tipsCard.addView(tipsText)
+        tipsCard.addView(tipsBtn)
+        layout.addView(tipsCard)
+
         // --- HOSTS SOURCES (ADAWAY STYLE) ---
         val sourceTitle = TextView(this).apply {
             text = "Hosts sources"
@@ -190,6 +228,28 @@ class MainActivity : Activity() {
                 } else if (v is LinearLayout) {
                     v.background = getCardBg()
                 }
+            }
+        }
+    }
+
+    private fun checkBatteryOptimizations() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            val prefs = getSharedPreferences("BlockMeshPrefs", Context.MODE_PRIVATE)
+            if (!prefs.getBoolean("prompted_battery", false)) {
+                AlertDialog.Builder(this)
+                    .setTitle("Battery Optimization")
+                    .setMessage("Android 'Doze' mode might kill the BlockMesh VPN when your screen turns off. To keep ad-blocking running seamlessly 24/7 without disconnects, please allow BlockMesh to run in the background.")
+                    .setPositiveButton("Configure") { _, _ ->
+                        prefs.edit().putBoolean("prompted_battery", true).apply()
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                        intent.data = Uri.parse("package:$packageName")
+                        try { startActivity(intent) } catch (e: Exception) {}
+                    }
+                    .setNegativeButton("Skip") { _, _ -> 
+                        prefs.edit().putBoolean("prompted_battery", true).apply()
+                    }
+                    .show()
             }
         }
     }
@@ -317,6 +377,43 @@ class MainActivity : Activity() {
                 updateUI()
             }
             .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showTipsDialog() {
+        val tipsMsg = """
+            |To prevent Android and TV operating systems from killing the BlockMesh background VPN process:
+            |
+            |📱 Xiaomi/POCO: 
+            |- Go to Settings > Apps > Manage Apps > BlockMesh
+            |- Turn ON 'Autostart'
+            |- Set 'Battery saver' to 'No restrictions'
+            |
+            |📱 Samsung:
+            |- Go to Settings > Apps > BlockMesh > Battery
+            |- Select 'Unrestricted'
+            |
+            |📱 Huawei:
+            |- Go to Settings > Battery > App Launch
+            |- Manage BlockMesh manually (enable Auto-launch, Secondary launch, Run in background)
+            |
+            |📺 Android TV / Google TV:
+            |- Go to Settings > Apps > BlockMesh
+            |- Ensure it's not restricted
+            |- Use the 'Boot Receiver' feature (already enabled!) so BlockMesh auto-starts when you turn the TV on.
+            |
+            |🔒 For all devices: Open your recents app menu, long press on BlockMesh (or tap the icon) and select 'Lock'.
+        """.trimMargin()
+
+        AlertDialog.Builder(this)
+            .setTitle("Tips & Tricks \uD83D\uDD0B")
+            .setMessage(tipsMsg)
+            .setPositiveButton("Configure Settings") { _, _ ->
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                intent.data = Uri.parse("package:$packageName")
+                try { startActivity(intent) } catch (e: Exception) {}
+            }
+            .setNegativeButton("Got it", null)
             .show()
     }
 
