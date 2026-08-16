@@ -3,7 +3,7 @@ package com.muxd22.blockmesh
 import android.content.Intent
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
-import engine.Engine // This is generated dynamically from your Go gomobile build
+import engine.Engine
 
 class MeshVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
@@ -15,22 +15,19 @@ class MeshVpnService : VpnService() {
         builder.addRoute("0.0.0.0", 0)
         builder.addDnsServer("10.100.0.1")
 
-        vpnInterface = builder.establish()
-        
-        val fd = vpnInterface?.fd ?: return START_NOT_STICKY
-        val rawFd = vpnInterface?.detachFd()!!
+        vpnInterface = builder.establish() ?: return START_NOT_STICKY
 
-        // Pass the raw FD directly to the Go Engine
+        // Start the Go DNS sinkhole engine (loads blocklists into radix trie)
         Thread {
-            Engine.startMesh(rawFd.toLong(), "dummy_private_key", "dummy_peer_config")
+            Engine.startEngine()
         }.start()
 
         return START_STICKY
     }
 
     override fun onDestroy() {
+        Engine.stopEngine()
         vpnInterface?.close()
-        Engine.stopMesh()
         super.onDestroy()
     }
 }
