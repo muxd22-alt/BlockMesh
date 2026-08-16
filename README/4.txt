@@ -1,0 +1,55 @@
+While existing server-based Docker configurations combining WireGuard and Pi-hole are colloquially known in the community as **WireHole**, our architecture is completely different. Because this is a *serverless*, peer-to-peer mesh compiled into a single application, we need a name that reflects its zero-config, decentralized nature.
+
+If we are launching this on GitHub, here are three strong, community-friendly naming directions:
+
+1. **MeshHole:** A direct nod to the Pi-hole legacy, but clearly communicating the P2P mesh architecture.
+2. **BlockMesh:** Clean, modern, and instantly describes exactly what the project does (Ad-Blocking + Mesh Networking).
+3. **AegisNode:** Focuses on the idea that every device (Node) acts as a protective shield (Aegis) for the user's traffic.
+
+For the rest of this technical deep dive, let's refer to the project as **BlockMesh**.
+
+---
+
+## 1. How libp2p Handles NAT Traversal (The Magic Trick)
+
+When you are at a coffee shop and your phone tries to connect to your Android TV at home, your home router's NAT (Network Address Translation) firewall will inherently block the incoming connection. Standard VPNs require you to manually log into your router and set up "Port Forwarding" to bypass this.
+
+**BlockMesh** uses `go-libp2p` to automate this entirely using a technique called UDP Hole Punching.
+
+* **Step 1: The Kademlia DHT (The Phonebook):** Your phone doesn't know your home's current IP address. It queries the libp2p Distributed Hash Table (DHT) asking, "Who has the cryptographic peer ID for my Android TV?" The decentralized network responds with the TV's last known public IP address.
+* **Step 2: AutoNAT & STUN:** Both the phone and the TV quietly ask a public STUN (Session Traversal Utilities for NAT) server on the internet: *"What does my IP and port look like from the outside?"*
+* **Step 3: UDP Hole Punching:** This is the magic. The TV sends a dummy UDP packet *out* to the phone's IP address. The home router sees this and opens a temporary "outbound hole" in the firewall, expecting a reply. Simultaneously, the phone sends a WireGuard handshake packet to the TV. Because the TV's router is already expecting traffic from the phone's IP, it lets the packet slip right through the firewall. The devices are now connected directly.
+* **Step 4: Circuit Relay (The Fallback):** If both devices happen to be stuck behind ultra-strict, symmetric corporate firewalls where hole punching fails, libp2p automatically utilizes a "Relay" node. A third peer on the network temporarily ferries the fully encrypted packets between the two devices until a direct connection can be negotiated.
+
+---
+
+## 2. Automating Blocklist Updates in the Go Engine
+
+A DNS sinkhole is only as good as its blocklist. If the list gets stale, new ads slip through. We need the Go engine to keep the list updated silently in the background without draining the phone's battery, wasting cellular data, or freezing the app while the list updates.
+
+Here is the architecture for the silent updater:
+
+### The Background Goroutine
+
+When the Android/iOS app initializes the Go engine, Go spawns a lightweight background thread (a Goroutine) attached to a `time.Ticker` set to check for updates every 12 hours.
+
+### Delta Syncing via ETags
+
+Community lists like *EasyList* or *OISD* can be megabytes in size. Downloading that over a cellular network twice a day wastes data. The Go engine sends an HTTP request using the `If-None-Match` header containing the `ETag` (a unique hash) of the current blocklist.
+
+* If the list hasn't changed, the server replies with an empty `304 Not Modified` status. Data used: ~50 bytes.
+* If it has changed, the server sends the new list.
+
+### Atomic Pointer Swapping (Zero Downtime)
+
+Parsing 300,000 domains into a Radix Trie structure takes a few seconds of CPU time. If the Go engine pauses the DNS server to build this list, web pages on the phone will fail to load, resulting in a terrible user experience.
+
+To solve this, we use Go's `sync/atomic` package:
+
+1. The engine downloads the new list and builds the *New Trie* in a separate block of memory.
+2. The *Old Trie* continues to actively block ads for incoming web requests.
+3. Once the *New Trie* is 100% built, the Go engine performs an **Atomic Pointer Swap**. In a single nanosecond, the DNS server is pointed from the old memory block to the new one. No packets are dropped, and the user never notices.
+
+### Binary Caching for Offline Boot
+
+If the user reboots their phone while on an airplane, the Go engine cannot reach GitHub to download the blocklist. Every time a new Trie is built, the engine must serialize it into a highly compressed binary format (like Protocol Buffers or `gob`) and save it to the device's local storage. On boot, the engine instantly loads this binary cache into memory, ensuring ad-blocking is active the second the device turns on, regardless of network connectivity.

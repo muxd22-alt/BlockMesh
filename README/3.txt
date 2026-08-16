@@ -1,0 +1,158 @@
+Building this out for Apple’s ecosystem requires navigating strict sandboxing, while the DNS sinkhole requires writing a blazingly fast packet interceptor in Go.
+
+Here is the architectural breakdown for both systems to make this unified mesh ad-blocker a reality.
+
+---
+
+## 1. iOS Implementation: `NEPacketTunnelProvider`
+
+Apple does not allow apps to run arbitrary background services like Android does. To build a VPN on iOS or macOS, you must create a completely separate target in Xcode called an **App Extension** using the `NetworkExtension` framework.
+
+### The iOS Sandboxing Challenge
+
+On Android, we used `detachFd()` to hand the raw network pipeline directly to Go. **Apple does not allow this.** The App Store strictly forbids accessing the raw TUN file descriptor via private APIs.
+
+Instead, Apple forces you to use `NEPacketTunnelFlow`. This means Swift must read the network packets as `NSData` objects and pass them into the Go engine via C-bindings. To make `wireguard-go` work with this, we must build a custom "Virtual TUN" interface in Go that talks to Swift.
+
+### Step 1: The Swift Tunnel Provider
+
+When the user taps "Connect" in the iOS UI, the system boots up your App Extension and calls `startTunnel`.
+
+```swift
+import NetworkExtension
+// 'Engine' is the gomobile generated framework
+import Engine 
+
+class MeshTunnelProvider: NEPacketTunnelProvider {
+
+    override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+        
+        // 1. Define the Mesh Network Settings
+        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "10.100.0.1")
+        settings.ipv4Settings = NEIPv4Settings(addresses: ["10.100.0.2"], subnetMasks: ["255.255.255.255"])
+        
+        // Route all traffic through the tunnel
+        settings.ipv4Settings?.includedRoutes = [NEIPv4Route.default()]
+        
+        // Force DNS queries into our Go Sinkhole
+        settings.dnsSettings = NEDNSSettings(servers: ["10.100.0.1"])
+        
+        // 2. Apply settings to the OS
+        self.setTunnelNetworkSettings(settings) { error in
+            if let error = error {
+                completionHandler(error)
+                return
+            }
+            
+            // 3. Start the Go Engine (running in the background)
+            Engine.StartMesh("private_key", "peer_config")
+            
+            // 4. Start the Packet bridging loop
+            self.readPacketsFromOS()
+            completionHandler(nil)
+        }
+    }
+
+    // The Bridge: Reading packets from iOS and shoving them into Go
+    private func readPacketsFromOS() {
+        self.packetFlow.readPackets { (packets, protocols) in
+            for packet in packets {
+                // Pass the raw byte array into our compiled Go library
+                Engine.ReceivePacketFromIOS(packet)
+            }
+            // Loop infinitely
+            self.readPacketsFromOS()
+        }
+    }
+    
+    // Called by Go when WireGuard has an encrypted packet to send out
+    @objc public func writePacketToOS(_ packet: Data) {
+        self.packetFlow.writePackets([packet], withProtocols: [NSNumber(value: AF_INET)])
+    }
+}
+
+```
+
+---
+
+## 2. The Go DNS Sinkhole Architecture
+
+The DNS Sinkhole sits exactly between the OS interface (the TUN device) and the WireGuard encryption engine. Its job is to act as a bouncer: inspect every single packet before it gets encrypted. If it’s an ad request, forge a fake response and drop the packet.
+
+### The Packet Lifecycle Pipeline
+
+1. **The Interceptor:** Read the raw IP packet (Layer 3) from the TUN device.
+2. **Protocol Sniffing:** Look at the IP header. Is the protocol UDP (17)? If yes, look at the UDP header. Is the Destination Port 53 (DNS)? If not, pass the packet straight to WireGuard.
+3. **DNS Unpacking:** If it is Port 53, strip the IP and UDP headers and decode the DNS payload (Layer 7) to extract the domain name (e.g., `ads.google.com`).
+4. **The Radix Trie Matcher:** Check the domain against our blocklist.
+5. **The Forge:** If blocked, construct a new DNS response packet saying the IP is `0.0.0.0` (or `NXDOMAIN`), swap the Source/Destination IPs and Ports, and write it back to the TUN device.
+
+### Step 1: The Radix Trie (The Speed Secret)
+
+You cannot use a simple list or array to check domains. With a blocklist of 300,000 domains, a linear search would introduce massive latency to every web request.
+
+Instead, we parse EasyList into an in-memory **Radix Trie** (or Prefix Tree) in Go. A domain like `telemetry.app.com` is stored backwards (`com -> app -> telemetry`). This allows the Go engine to match a domain in *O(K)* time (where *K* is the length of the domain string), taking only nanoseconds.
+
+### Step 2: The Go Bouncer Logic
+
+Here is the architectural blueprint for the interception loop inside the Go Engine:
+
+```go
+package engine
+
+import (
+	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/net/ipv4"
+)
+
+// ProcessPacket is the first thing that touches a packet coming from Android/iOS
+func ProcessPacket(rawPacket []byte) {
+	// 1. Parse the IPv4 Header
+	header, err := ipv4.ParseHeader(rawPacket)
+	if err != nil {
+		return
+	}
+
+	// 2. Is this UDP traffic? (Protocol 17)
+	if header.Protocol == 17 {
+		// Extract UDP ports (bytes 20-24 of the IP payload)
+		destPort := extractUDPPort(rawPacket)
+
+		// 3. Is this a DNS Query? (Port 53)
+		if destPort == 53 {
+			handleDNSQuery(rawPacket)
+			return // DROP packet from moving to WireGuard
+		}
+	}
+
+	// 4. Not DNS? Send it to WireGuard for encryption and libp2p routing
+	sendToWireGuard(rawPacket)
+}
+
+func handleDNSQuery(rawPacket []byte) {
+	// Unpack the DNS payload
+	var msg dnsmessage.Message
+	msg.Unpack(extractDNSPayload(rawPacket))
+
+	// Get the requested domain (e.g., "ads.google.com.")
+	domain := msg.Questions[0].Name.String()
+
+	// 5. Query our ultra-fast Radix Trie
+	if BlocklistTrie.Contains(domain) {
+		// 6. Forge the Sinkhole Response (0.0.0.0)
+		sinkholePacket := forgeDNSZeroResponse(rawPacket, msg)
+		
+		// 7. Write the fake response directly back to the OS
+		writeBackToOS(sinkholePacket)
+		return
+	}
+
+	// If the domain is safe, wrap it back up and send to WireGuard to resolve normally
+	sendToWireGuard(rawPacket)
+}
+
+```
+
+### The Beauty of this Architecture
+
+By doing this in Go *before* the packet hits WireGuard, the device OS thinks it successfully queried a DNS server and got a legitimate response instantly. Apps don't crash waiting for timeouts, the network doesn't slow down, and your home Android TV exit-node doesn't waste bandwidth processing ad requests.
